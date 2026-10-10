@@ -1,0 +1,60 @@
+# Ronex uptime monitor. Runs on GitHub's servers every 5 minutes, outside Supabase and Vercel.
+# A check that fails twice in a row (20 s apart) opens an incident in the Ronex System Health page
+# and fails this run, so GitHub emails the owner. A check that passes closes any open incident.
+# The webhook key lives in the repository secret INCIDENT_HOOK_KEY, never in this file.
+name: uptime
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      simulate:
+        description: 'none = real check; selftest = open, close and remove a Self-test incident'
+        default: 'none'
+
+concurrency:
+  group: uptime
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Check and report
+        env:
+          KEY: ${{ secrets.INCIDENT_HOOK_KEY }}
+          SIMULATE: ${{ github.event.inputs.simulate || 'none' }}
+        run: |
+          HOOK="https://anlrlontzihygtkfiwmd.supabase.co/functions/v1/incident-hook?key=${KEY}"
+          post() { # monitor type details
+            body=$(jq -nc --arg m "$1" --arg t "$2" --arg d "$3" --arg at "$(date +%s)" '{monitor:$m, type:$t, details:$d, at:$at}')
+            curl -s -m 20 -X POST "$HOOK" -H 'content-type: application/json' -d "$body"; echo
+          }
+
+          if [ "$SIMULATE" = "selftest" ]; then
+            post "Self-test" 1 "self-test: pretending to be down"
+            sleep 5
+            post "Self-test" 2 ""
+            post "Self-test" cleanup ""
+            exit 0
+          fi
+
+          probe() { # name url grep-pattern
+            for i in 1 2; do
+              out=$(curl -sL -m 15 -w '\n%{http_code}' "$2" || true)
+              code=$(echo "$out" | tail -1)
+              if [ "$code" = "200" ] && { [ -z "$3" ] || echo "$out" | grep -q "$3"; }; then echo "UP"; return; fi
+              [ $i = 1 ] && sleep 20
+            done
+            echo "DOWN http $code"
+          }
+
+          failed=0
+          app=$(probe "Ronex app" "https://ronex-cars.vercel.app/api/health" '"ok":true')
+          web=$(probe "Ronex website" "https://ronexcars.com" '')
+          echo "Ronex app: $app"; echo "Ronex website: $web"
+          if [ "$app" = "UP" ]; then post "Ronex app" 2 ""; else post "Ronex app" 1 "$app"; failed=1; fi
+          if [ "$web" = "UP" ]; then post "Ronex website" 2 ""; else post "Ronex website" 1 "$web"; failed=1; fi
+          exit $failed
