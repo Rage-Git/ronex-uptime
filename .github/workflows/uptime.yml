@@ -27,10 +27,11 @@ jobs:
           KEY: ${{ secrets.INCIDENT_HOOK_KEY }}
           SIMULATE: ${{ github.event.inputs.simulate || 'none' }}
         run: |
-          HOOK="https://anlrlontzihygtkfiwmd.supabase.co/functions/v1/incident-hook?key=${KEY}"
+          # the key goes in a header, never in the URL (URLs land in logs; Ronex v4.16.1302)
+          HOOK="https://anlrlontzihygtkfiwmd.supabase.co/functions/v1/incident-hook"
           post() { # monitor type details
             body=$(jq -nc --arg m "$1" --arg t "$2" --arg d "$3" --arg at "$(date +%s)" '{monitor:$m, type:$t, details:$d, at:$at}')
-            curl -s -m 20 -X POST "$HOOK" -H 'content-type: application/json' -d "$body"; echo
+            curl -s -m 20 -X POST "$HOOK" -H 'content-type: application/json' -H "x-incident-key: ${KEY}" -d "$body"; echo
           }
 
           if [ "$SIMULATE" = "selftest" ]; then
